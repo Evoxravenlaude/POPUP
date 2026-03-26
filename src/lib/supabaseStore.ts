@@ -50,7 +50,7 @@ export async function fetchArtistByWalletFromSupabase(wallet: string) {
     return data || null;
   } catch (error: any) {
     console.error("❌ fetchArtistByWalletFromSupabase failed:", error.message);
-    throw error;
+    return [];
   }
 }
 
