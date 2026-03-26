@@ -75,7 +75,14 @@ export function useWallet() {
       }
     }
 
-    // Fallback to first available connector
+    // Desktop without extension — show WalletConnect QR modal
+    const wcConnector = connectors.find(c => c.id === 'walletConnect');
+    if (wcConnector) {
+      connect({ connector: wcConnector, chainId: ACTIVE_CHAIN.id });
+      return;
+    }
+
+    // Last resort fallback
     if (connectors.length > 0) {
       connect({ connector: connectors[0], chainId: ACTIVE_CHAIN.id });
     }
