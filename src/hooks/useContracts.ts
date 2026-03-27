@@ -10,7 +10,7 @@ import {
 } from "wagmi";
 import { injected, walletConnect, coinbaseWallet, metaMask } from "wagmi/connectors";
 import { createPublicClient, http, decodeEventLog, parseEther, getAddress } from "viem";
-import { ACTIVE_CHAIN } from "@/lib/wagmi";
+import { ACTIVE_CHAIN, appKit } from "@/lib/wagmi";
 import { ART_DROP_ABI, ART_DROP_ADDRESS } from "@/lib/contracts/artDrop";
 import { POAP_CAMPAIGN_ABI, POAP_CAMPAIGN_ADDRESS } from "@/lib/contracts/poapCampaign";
 
@@ -22,70 +22,7 @@ export function useWallet() {
   const { data: balance } = useBalance({ address });
 
   const connectWallet = () => {
-    // Enhanced mobile detection
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-      navigator.userAgent
-    ) || window.innerWidth <= 768;
-
-    // Improved mobile wallet detection - check actual UA strings and ethereum provider
-    const isMobileWallet =
-      // MetaMask mobile browser (contains "MetaMask/" not "MetaMaskMobile")
-      /MetaMask\//i.test(navigator.userAgent) ||
-      // Trust Wallet
-      /TrustWallet|Trust/i.test(navigator.userAgent) ||
-      // Coinbase Wallet
-      /CoinbaseWallet|Coinbase/i.test(navigator.userAgent) ||
-      // Phantom
-      /Phantom/i.test(navigator.userAgent) ||
-      // Other DApp browsers
-      /DApp|Status|imToken|TokenPocket|MathWallet|BitKeep|SafePal/i.test(navigator.userAgent) ||
-      // Check ethereum provider properties
-      Boolean((window as any).ethereum?.isMetaMask) ||
-      Boolean((window as any).ethereum?.isTrust) ||
-      Boolean((window as any).ethereum?.isCoinbaseWallet);
-
-    if (isMobile && !isMobileWallet) {
-      // On mobile browsers (not in-wallet), prefer WalletConnect for better compatibility
-      const wcConnector = connectors.find(c => c.id === 'walletConnect');
-      if (wcConnector) {
-        connect({ connector: wcConnector, chainId: ACTIVE_CHAIN.id });
-        return;
-      }
-    }
-
-    // Try injected connector first (works for extensions and mobile wallet browsers)
-    const injectedConnector = connectors.find(c => c.id === 'injected');
-    if (injectedConnector) {
-      try {
-        connect({ connector: injectedConnector, chainId: ACTIVE_CHAIN.id });
-        return;
-      } catch (error) {
-        console.warn('Injected connector failed, trying alternatives:', error);
-      }
-    }
-
-    // Try Coinbase Wallet (good mobile support)
-    const coinbaseConnector = connectors.find(c => c.id === 'coinbaseWallet');
-    if (coinbaseConnector) {
-      try {
-        connect({ connector: coinbaseConnector, chainId: ACTIVE_CHAIN.id });
-        return;
-      } catch (error) {
-        console.warn('Coinbase connector failed:', error);
-      }
-    }
-
-    // Desktop without extension — show WalletConnect QR modal
-    const wcConnector = connectors.find(c => c.id === 'walletConnect');
-    if (wcConnector) {
-      connect({ connector: wcConnector, chainId: ACTIVE_CHAIN.id });
-      return;
-    }
-
-    // Last resort fallback
-    if (connectors.length > 0) {
-      connect({ connector: connectors[0], chainId: ACTIVE_CHAIN.id });
-    }
+    appKit.open();
   };
 
   return {
