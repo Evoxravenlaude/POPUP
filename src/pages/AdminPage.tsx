@@ -11,12 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { supabase } from "@/lib/db";
 import { useWallet } from "@/hooks/useContracts";
 import { ipfsToHttp, uploadFileToPinata } from "@/lib/pinata";
 import {
   ARTIST_WHITELIST_STORAGE_KEY,
   type ArtistWhitelistEntry as WhitelistEntry,
   getStoredArtistWhitelist,
+  getServerArtistWhitelist,
   syncArtistWhitelist,
 } from "@/lib/whitelist";
 import { getAnalyticsSnapshot, getRecentVisitSeries } from "@/lib/analyticsStore";
@@ -29,7 +31,6 @@ import {
   updateOrder as dbUpdateOrder,
   getProducts as dbGetProducts,
   getOrdersByProduct as dbGetOrdersByProduct,
-  updateWhitelistEntry,
 } from "@/lib/db";
 import { useSupabaseArtists, useSupabaseAllProducts, useSupabaseAllDrops } from "@/hooks/useSupabase";
 
@@ -475,6 +476,20 @@ const AdminPage = () => {
   const [activeTab, setActiveTab] = useState("whitelist");
 
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>(() => getStoredArtistWhitelist());
+  const [whitelistLoading, setWhitelistLoading] = useState(true);
+
+  // ✅ FIX: Load whitelist from Supabase on mount — not just localStorage
+  useEffect(() => {
+    getServerArtistWhitelist()
+      .then(entries => {
+        setWhitelist(entries);
+        console.log(`✅ Whitelist loaded from Supabase: ${entries.length} entries`);
+      })
+      .catch(err => {
+        console.error("❌ Failed to load whitelist from Supabase, using cache:", err);
+      })
+      .finally(() => setWhitelistLoading(false));
+  }, []);
   const [products, setProducts] = useState<MarketProduct[]>([]);
   const [orders, setOrders] = useState<Order[]>(() =>
     loadStoredState(STORAGE_KEYS.orders, [] as Order[])
@@ -509,25 +524,71 @@ const AdminPage = () => {
     }
   }, [supabaseProducts]);
 
-  // Whitelist actions
-  const approveArtist = (id: string) => {
-    setWhitelist(p => p.map(e => {
-      if (e.id === id) {
-        // Create artist record when approving
-        resolveArtistForWallet(e.wallet);
-        // Save to Supabase
-        updateWhitelistEntry(id, { status: "approved" }).catch(err =>
-          console.error("❌ Failed to update whitelist in Supabase:", err)
-        );
-        return { ...e, status: "approved" };
-      }
-      return e;
-    }));
+  // Whitelist actions — all writes go directly to Supabase
+  const approveArtist = async (id: string) => {
+    const entry = whitelist.find(e => e.id === id);
+    if (!entry) return;
+
+    // Optimistic update
+    setWhitelist(p => p.map(e => e.id === id ? { ...e, status: "approved" } : e));
+
+    const { error } = await supabase
+      .from("whitelist")
+      .update({ status: "approved", approved_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("wallet", entry.wallet.toLowerCase());
+
+    if (error) {
+      console.error("❌ Failed to approve artist in Supabase:", error);
+      // Roll back optimistic update
+      setWhitelist(p => p.map(e => e.id === id ? { ...e, status: "pending" } : e));
+      toast.error("Failed to approve artist — try again");
+      return;
+    }
+
+    resolveArtistForWallet(entry.wallet);
     toast.success("Artist approved");
   };
-  const rejectArtist = (id: string) => { setWhitelist(p => p.map(e => e.id === id ? { ...e, status: "rejected" } : e)); toast.error("Artist rejected"); };
-  const removeArtist = (id: string) => { setWhitelist(p => p.filter(e => e.id !== id)); toast.info("Artist removed"); };
-  const addArtist = () => {
+
+  const rejectArtist = async (id: string) => {
+    const entry = whitelist.find(e => e.id === id);
+    if (!entry) return;
+
+    setWhitelist(p => p.map(e => e.id === id ? { ...e, status: "rejected" } : e));
+
+    const { error } = await supabase
+      .from("whitelist")
+      .update({ status: "rejected", updated_at: new Date().toISOString() })
+      .eq("wallet", entry.wallet.toLowerCase());
+
+    if (error) {
+      console.error("❌ Failed to reject artist in Supabase:", error);
+      setWhitelist(p => p.map(e => e.id === id ? { ...e, status: "pending" } : e));
+      toast.error("Failed to reject artist — try again");
+      return;
+    }
+    toast.error("Artist rejected");
+  };
+
+  const removeArtist = async (id: string) => {
+    const entry = whitelist.find(e => e.id === id);
+    if (!entry) return;
+
+    setWhitelist(p => p.filter(e => e.id !== id));
+
+    const { error } = await supabase
+      .from("whitelist")
+      .delete()
+      .eq("wallet", entry.wallet.toLowerCase());
+
+    if (error) {
+      console.error("❌ Failed to remove artist from Supabase:", error);
+      setWhitelist(p => [...p, entry]);
+      toast.error("Failed to remove artist — try again");
+      return;
+    }
+    toast.info("Artist removed");
+  };
+  const addArtist = async () => {
     // Validate wallet address
     if (!isValidWalletAddress(newWallet)) {
       toast.error("Invalid wallet address format");
@@ -552,26 +613,46 @@ const AdminPage = () => {
       return;
     }
 
-    const newEntry = {
-      id: `w${Date.now()}`,
-      wallet: newWallet,
+    const normalizedWallet = newWallet.trim().toLowerCase();
+    const now = new Date().toISOString();
+
+    // ✅ FIX: Write directly to Supabase first, then update local state on success
+    const { data: inserted, error } = await supabase
+      .from("whitelist")
+      .upsert(
+        {
+          wallet: normalizedWallet,
+          name: sanitizedName,
+          tag: newTag || "Other",
+          status: "approved",
+          joined_at: now,
+          approved_at: now,
+          updated_at: now,
+        },
+        { onConflict: "wallet" }
+      )
+      .select()
+      .single();
+
+    if (error) {
+      console.error("❌ Failed to save artist to Supabase:", error);
+      toast.error("Failed to whitelist artist — check your connection and try again");
+      return;
+    }
+
+    const newEntry: WhitelistEntry = {
+      id: inserted?.id ?? `w${Date.now()}`,
+      wallet: normalizedWallet,
       name: sanitizedName,
-      tag: newTag,
-      status: "approved" as const,
-      joinedAt: new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" })
+      tag: newTag || "Other",
+      status: "approved",
+      joinedAt: new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" }),
+      joined_at: now,
+      approved_at: now,
     };
+
     setWhitelist(p => [...p, newEntry]);
-    // Create artist record for newly added approved artist
-    resolveArtistForWallet(newWallet);
-    // Save to Supabase
-    updateWhitelistEntry(newEntry.id, { 
-      wallet: newWallet,
-      name: sanitizedName,
-      tag: newTag,
-      status: "approved"
-    }).catch(err =>
-      console.error("❌ Failed to save artist to whitelist in Supabase:", err)
-    );
+    resolveArtistForWallet(normalizedWallet);
     setNewWallet("");
     setNewName("");
     setAddingArtist(false);
